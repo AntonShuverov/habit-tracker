@@ -5,6 +5,7 @@ import { initDb } from './database.js'
 import habitsRouter from './routes/habits.js'
 import logsRouter from './routes/logs.js'
 import groupRouter from './routes/group.js'
+import { setupBot } from './bot.js'
 
 const app = express()
 app.use(express.json())
@@ -12,6 +13,9 @@ app.use(express.static('public'))
 
 // Init DB
 initDb(process.env.DATABASE_PATH || './data/habits.db')
+
+// Start bot
+setupBot()
 
 // Auth middleware — parses Telegram initData, attaches req.telegramUser
 app.use('/api', (req, res, next) => {
