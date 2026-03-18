@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Habit Tracker</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  :root {
+    --bg: #0F0F0F;
+    --card: #1A1A1A;
+    --border: #2D2D2D;
+    --accent: #6C63FF;
+    --success: #4CAF50;
+    --fail: #FF5252;
+    --text: #FFFFFF;
+    --muted: #888888;
+    --nav-h: 64px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Screens ─────────────────────────────────────── */
+  .screen { display: none; flex-direction: column; height: 100vh; }
+  .screen.active { display: flex; }
+
+  .scroll-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 16px 16px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ── Bottom Nav ──────────────────────────────────── */
+  .bottom-nav {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    background: var(--bg);
+    border-top: 1px solid #1a1a1a;
+    padding-bottom: env(safe-area-inset-bottom, 8px);
+    flex-shrink: 0;
+  }
+
+  .nav-btn {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 3px; padding: 10px 4px; cursor: pointer;
+    color: #444; font-size: 11px; border: none; background: none;
+    border-radius: 12px; margin: 4px; transition: color 0.15s;
+  }
+  .nav-btn.active { color: var(--accent); background: rgba(108,99,255,0.1); }
+  .nav-btn .icon { font-size: 22px; line-height: 1; }
+
+  /* ── Header ─────────────────────────────────────── */
+  .screen-header {
+    padding: 16px 16px 10px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  /* ── Cards ───────────────────────────────────────── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 10px;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .card.done { background: #111e11; border-color: #1a3a1a; }
+  .card.failed { background: #1e1111; border-color: #3a1a1a; }
+
+  /* ── Buttons ─────────────────────────────────────── */
+  .btn {
+    border: none; border-radius: 12px; padding: 11px 16px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-success { background: var(--success); color: white; width: 100%; }
+  .btn-fail-state { background: var(--fail); color: white; width: 100%; }
+  .btn-ghost {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--muted); width: 100%;
+  }
+  .btn-dashed {
+    background: transparent; border: 1.5px dashed var(--border);
+    color: #555; width: 100%; padding: 14px;
+    font-size: 14px; cursor: pointer; border-radius: 16px;
+    margin-top: 4px;
+  }
+
+  /* ── Habit card ──────────────────────────────────── */
+  .habit-top {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  }
+  .habit-emoji { font-size: 22px; line-height: 1; }
+  .habit-info { flex: 1; }
+  .habit-title { font-size: 15px; font-weight: 600; }
+  .habit-streak { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .type-badge {
+    font-size: 10px; padding: 3px 8px; border-radius: 10px; font-weight: 500;
+  }
+  .type-quit { background: #2a1a1a; color: #ff6b35; }
+  .type-build { background: #1a2a1a; color: var(--success); }
+
+  .habit-actions { display: grid; grid-template-columns: 1fr 72px; gap: 8px; }
+
+  /* ── Progress bar ─────────────────────────────────── */
+  .progress-wrap { margin: 4px 0 16px; }
+  .progress-row {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: var(--muted); margin-bottom: 5px;
+  }
+  .progress-track {
+    height: 3px; background: var(--border); border-radius: 2px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), #a855f7);
+    transition: width 0.4s ease;
+  }
+
+  /* ── Section label ───────────────────────────────── */
+  .sec-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 1.2px;
+    color: #444; text-transform: uppercase; margin: 8px 2px 12px;
+  }
+
+  /* ── Avatar letter ───────────────────────────────── */
+  .avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), #a855f7);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700; color: white; flex-shrink: 0;
+  }
+
+  /* ── Loading / Toast ─────────────────────────────── */
+  #loading {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; z-index: 100;
+  }
+  #toast {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: #333; color: white; padding: 10px 20px; border-radius: 20px;
+    font-size: 13px; opacity: 0; transition: opacity 0.3s;
+    pointer-events: none; z-index: 200; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+
+  /* ── Bottom sheet ────────────────────────────────── */
+  .sheet-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    z-index: 50; display: none; align-items: flex-end;
+  }
+  .sheet-overlay.open { display: flex; }
+  .sheet {
+    width: 100%; background: var(--card);
+    border-radius: 20px 20px 0 0; padding: 0 16px 32px;
+    border-top: 1px solid var(--border);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .sheet-handle {
+    width: 36px; height: 4px; background: var(--border);
+    border-radius: 2px; margin: 12px auto 16px;
+  }
+  .sheet-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .sheet-sub { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+
+  /* ── Form elements ───────────────────────────────── */
+  input[type="text"] {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; color: white; font-size: 15px;
+    outline: none; margin-bottom: 16px;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+
+  .radio-group { display: flex; gap: 10px; margin-bottom: 16px; }
+  .radio-opt {
+    flex: 1; padding: 12px; border-radius: 12px;
+    border: 1.5px solid var(--border); background: var(--bg);
+    cursor: pointer; text-align: center; font-size: 14px; color: var(--muted);
+    transition: all 0.15s;
+  }
+  .radio-opt.selected { border-color: var(--accent); color: white; background: rgba(108,99,255,0.1); }
+  .radio-opt .opt-icon { font-size: 20px; display: block; margin-bottom: 4px; }
+
+  .emoji-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 20px; }
+  .emoji-opt {
+    aspect-ratio: 1; border-radius: 12px; border: 1.5px solid var(--border);
+    background: var(--bg); display: flex; align-items: center; justify-content: center;
+    font-size: 22px; cursor: pointer; transition: all 0.15s;
+  }
+  .emoji-opt.selected { border-color: var(--accent); background: rgba(108,99,255,0.15); }
+
+  /* ── Calendar ────────────────────────────────────── */
+  .cal-nav-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .cal-month-name { font-size: 15px; font-weight: 700; }
+  .cal-arrows { display: flex; gap: 20px; }
+  .cal-arrow { color: var(--accent); font-size: 22px; cursor: pointer; line-height: 1; }
+
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 14px; }
+  .cal-dn { text-align: center; font-size: 11px; color: #444; padding: 2px 0 7px; }
+  .cal-day {
+    aspect-ratio: 1; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 500; cursor: pointer; position: relative;
+  }
+  .cal-day.x { visibility: hidden; cursor: default; }
+  .cal-day.future { background: #141414; color: #2a2a2a; cursor: default; }
+  .cal-day.ok { background: #1a3a1a; color: var(--success); font-weight: 600; }
+  .cal-day.partial { background: #2a2000; color: #FFC107; font-weight: 600; }
+  .cal-day.fail { background: #3a1010; color: var(--fail); font-weight: 600; }
+  .cal-day.miss { background: #1a1a1a; color: #444; border: 1px dashed #333; }
+  .cal-day.today-ring { box-shadow: 0 0 0 2px var(--accent); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #666; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  .hbar { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+  .hbar-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .hbar-name { font-size: 14px; }
+  .hbar-streak { color: var(--success); font-size: 13px; font-weight: 600; }
+  .bar-track { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--success), var(--accent)); }
+  .bar-sub { color: #555; font-size: 11px; margin-top: 5px; }
+
+  /* ── Retroactive sheet toggles ───────────────────── */
+  .retro-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0; border-bottom: 1px solid #222;
+  }
+  .retro-row:last-of-type { border-bottom: none; }
+  .retro-name { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .toggle-group { display: flex; gap: 6px; }
+  .tog {
+    width: 36px; height: 36px; border-radius: 10px;
+    border: 1px solid var(--border); display: flex; align-items: center;
+    justify-content: center; font-size: 15px; cursor: pointer; background: var(--bg);
+    transition: all 0.15s;
+  }
+  .tog.yes { background: #1a3a1a; border-color: var(--success); }
+  .tog.no  { background: #3a1010; border-color: var(--fail); }
+
+  /* ── Friends ─────────────────────────────────────── */
+  .friend-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin-bottom: 10px; }
+  .friend-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .friend-name { font-size: 15px; font-weight: 600; }
+  .friend-status { font-size: 12px; color: var(--success); margin-top: 2px; }
+  .friend-status.no { color: #555; }
+  .friend-habits { display: flex; flex-direction: column; gap: 7px; }
+  .friend-habit { display: flex; justify-content: space-between; align-items: center; }
+  .friend-habit-name { color: #999; font-size: 13px; }
+  .friend-habit-streak { color: white; font-size: 13px; font-weight: 600; }
+
+  .group-switcher {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 20px; padding: 6px 12px; font-size: 12px;
+    color: var(--accent); cursor: pointer; display: flex; align-items: center; gap: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">⏳</div>
+<div id="toast"></div>
+
+<!-- ══════════════ TODAY SCREEN ══════════════ -->
+<div id="screen-today" class="screen">
+  <div class="screen-header">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="avatar" id="user-avatar">?</div>
+      <div>
+        <div id="user-greeting" style="font-size:16px;font-weight:600">Загрузка...</div>
+        <div id="today-date" style="font-size:12px;color:#666"></div>
+      </div>
+    </div>
+    <div id="progress-badge" style="background:var(--card);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:12px;color:var(--muted)">0/0</div>
+  </div>
+
+  <div class="scroll-content">
+    <div class="progress-wrap">
+      <div class="progress-row">
+        <span>Прогресс сегодня</span>
+        <span id="progress-pct">0%</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+    </div>
+
+    <div class="sec-label">Мои привычки</div>
+    <div id="habits-list"></div>
+    <button class="btn-dashed" onclick="openAddHabit()">+ Добавить привычку</button>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" onclick="showScreen('today')" data-screen="today">
+      <span class="icon">📅</span><span>Сегодня</span>
+    </button>
+    <button class="nav-btn" onclick="showScreen('calendar')" data-screen="calendar">
+      <span class="icon">📆</span><span>Календарь</span>
+    </button>
+    <button class="nav-btn" onclick="showScreen('friends')" data-screen="friends">
+      <span class="icon">👥</span><span>Друзья</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ══════════════ CALENDAR SCREEN ══════════════ -->
+<div id="screen-calendar" class="screen">
+  <div class="screen-header">
+    <div style="font-size:18px;font-weight:700">Мой календарь</div>
+    <div id="cal-streak-badge" style="font-size:12px;color:var(--success)"></div>
+  </div>
+
+  <div class="scroll-content">
+    <div class="cal-nav-row">
+      <div class="cal-month-name" id="cal-month-label"></div>
+      <div class="cal-arrows">
+        <div class="cal-arrow" onclick="calChangeMonth(-1)">‹</div>
+        <div class="cal-arrow" onclick="calChangeMonth(1)">›</div>
+      </div>
+    </div>
+    <div class="cal-grid" id="cal-grid"></div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--success)"></div>Все выполнил</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#FFC107"></div>Частично</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--fail)"></div>Провалил</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1a1a1a;border:1px dashed #444"></div>Нажми — заполни</div>
+    </div>
+
+    <div class="sec-label">Прогресс в месяце</div>
+    <div id="cal-habit-bars"></div>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn" onclick="showScreen('today')" data-screen="today">
+      <span class="icon">📅</span><span>Сегодня</span>
+    </button>
+    <button class="nav-btn active" onclick="showScreen('calendar')" data-screen="calendar">
+      <span class="icon">📆</span><span>Календарь</span>
+    </button>
+    <button class="nav-btn" onclick="showScreen('friends')" data-screen="friends">
+      <span class="icon">👥</span><span>Друзья</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ══════════════ FRIENDS SCREEN ══════════════ -->
+<div id="screen-friends" class="screen">
+  <div class="screen-header">
+    <div style="font-size:18px;font-weight:700">Друзья</div>
+    <div class="group-switcher" id="group-switcher" onclick="openGroupSwitcher()">
+      <span id="current-group-name">Загрузка...</span> ▾
+    </div>
+  </div>
+
+  <div class="scroll-content">
+    <div class="sec-label" id="friends-sec-label"></div>
+    <div id="friends-list"></div>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn" onclick="showScreen('today')" data-screen="today">
+      <span class="icon">📅</span><span>Сегодня</span>
+    </button>
+    <button class="nav-btn" onclick="showScreen('calendar')" data-screen="calendar">
+      <span class="icon">📆</span><span>Календарь</span>
+    </button>
+    <button class="nav-btn active" onclick="showScreen('friends')" data-screen="friends">
+      <span class="icon">👥</span><span>Друзья</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ══════════════ ADD/EDIT HABIT SHEET ══════════════ -->
+<div class="sheet-overlay" id="add-habit-sheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="habit-sheet-title">Новая привычка</div>
+    <div class="sheet-sub">Как называется?</div>
+
+    <input type="text" id="habit-name-input" placeholder="Не курить / Читать книгу..." maxlength="60">
+
+    <div class="sec-label">Тип привычки</div>
+    <div class="radio-group">
+      <div class="radio-opt" id="type-quit" onclick="selectType('quit')">
+        <span class="opt-icon">🚫</span>
+        Хочу бросить
+      </div>
+      <div class="radio-opt" id="type-build" onclick="selectType('build')">
+        <span class="opt-icon">🌱</span>
+        Хочу привить
+      </div>
+    </div>
+
+    <div class="sec-label">Эмодзи</div>
+    <div class="emoji-grid" id="emoji-grid"></div>
+
+    <button class="btn btn-primary" style="width:100%" onclick="saveHabit()">
+      <span id="save-habit-btn-text">Создать привычку</span>
+    </button>
+  </div>
+</div>
+
+<!-- ══════════════ RETROACTIVE LOG SHEET ══════════════ -->
+<div class="sheet-overlay" id="retro-sheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="retro-date-title"></div>
+    <div class="sheet-sub">Заполни пропущенный день</div>
+    <div id="retro-habits-list"></div>
+    <button class="btn btn-primary" style="width:100%;margin-top:16px" onclick="saveRetroLog()">Сохранить</button>
+  </div>
+</div>
+
+<!-- ══════════════ GROUP SWITCHER SHEET ══════════════ -->
+<div class="sheet-overlay" id="group-switcher-sheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Выбери группу</div>
+    <div id="group-list" style="margin-top:16px"></div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════
+const tg = window.Telegram?.WebApp
+const EMOJIS = ['🚬','🍬','🍺','🏋️','📚','🧘','💊','😴','🥗','💻']
+
+let state = {
+  user: null,
+  groups: [],
+  currentGroupId: null,
+  habits: [],          // with .streak
+  todayLogs: {},       // habitId → {completed}
+  today: '',           // YYYY-MM-DD
+  calMonth: '',        // YYYY-MM
+  calData: [],         // [{habit, logs:[]}]
+  editingHabitId: null,
+  selectedType: null,
+  selectedEmoji: null,
+  retroDate: null,
+  retroSelections: {}, // habitId → true|false|null
+}
+
+// ════════════════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════════════════
+async function init() {
+  tg?.ready()
+  tg?.expand()
+
+  state.today = new Date().toLocaleDateString('sv')
+  state.calMonth = state.today.slice(0, 7)
+
+  buildEmojiGrid()
+
+  try {
+    const authRes = await api('POST', '/api/auth', {})
+    state.user = authRes.user
+    state.groups = authRes.groups || []
+    if (state.groups.length > 0) state.currentGroupId = state.groups[0].id
+
+    await loadTodayData()
+    renderToday()
+    updateGroupSwitcher()
+    showScreen('today')
+  } catch (e) {
+    showToast('Ошибка загрузки: ' + e.message)
+    // Still show the app if auth fails in dev without initData
+    showScreen('today')
+  }
+
+  document.getElementById('loading').style.display = 'none'
+}
+
+// ════════════════════════════════════════════════════════
+//  API
+// ════════════════════════════════════════════════════════
+async function api(method, path, body) {
+  const initData = tg?.initData || 'user=%7B%22id%22%3A12345%2C%22first_name%22%3A%22Dev%22%7D'
+  const res = await fetch(path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'tma ' + initData,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(err.error || res.statusText)
+  }
+  return res.json()
+}
+
+// ════════════════════════════════════════════════════════
+//  TODAY
+// ════════════════════════════════════════════════════════
+async function loadTodayData() {
+  if (!state.user) return
+  state.habits = await api('GET', `/api/habits/${state.user.id}`)
+  const logs = await api('GET', `/api/logs/${state.user.id}/${state.today}`)
+  state.todayLogs = {}
+  for (const log of logs) state.todayLogs[log.habit_id] = log
+}
+
+function renderToday() {
+  const u = state.user
+  const dateStr = new Date().toLocaleDateString('ru', { weekday:'long', day:'numeric', month:'long' })
+
+  document.getElementById('user-avatar').textContent = u ? u.first_name[0].toUpperCase() : '?'
+  document.getElementById('user-greeting').textContent = `Привет, ${u?.first_name || 'друг'} 👋`
+  document.getElementById('today-date').textContent = dateStr.charAt(0).toUpperCase() + dateStr.slice(1)
+
+  const habits = state.habits
+  const done = habits.filter(h => state.todayLogs[h.id]?.completed).length
+  const total = habits.length
+  const pct = total ? Math.round(done / total * 100) : 0
+
+  document.getElementById('progress-badge').textContent = `${done}/${total} ✓`
+  document.getElementById('progress-pct').textContent = pct + '%'
+  document.getElementById('progress-fill').style.width = pct + '%'
+
+  const list = document.getElementById('habits-list')
+  list.innerHTML = ''
+
+  for (const habit of habits) {
+    const log = state.todayLogs[habit.id]
+    const isCompleted = log?.completed === 1
+    const isFailed = log?.completed === 0
+
+    const card = document.createElement('div')
+    card.className = 'card' + (isCompleted ? ' done' : isFailed ? ' failed' : '')
+
+    // Long-press to edit habit
+    let pressTimer
+    card.addEventListener('pointerdown', () => {
+      pressTimer = setTimeout(() => {
+        tg?.HapticFeedback?.impactOccurred('heavy')
+        openAddHabit(habit)
+      }, 500)
+    })
+    card.addEventListener('pointerup', () => clearTimeout(pressTimer))
+    card.addEventListener('pointerleave', () => clearTimeout(pressTimer))
+
+    card.innerHTML = `
+      <div class="habit-top">
+        <div class="habit-emoji">${habit.emoji}</div>
+        <div class="habit-info">
+          <div class="habit-title">${habit.title}</div>
+          <div class="habit-streak">${habit.streak > 0 ? `🔥 ${habit.streak} дней подряд` : 'Начни сегодня!'}</div>
+        </div>
+        <span class="type-badge ${habit.type === 'quit' ? 'type-quit' : 'type-build'}">
+          ${habit.type === 'quit' ? 'бросаю' : 'привожу'}
+        </span>
+      </div>
+    `
+
+    if (isCompleted) {
+      card.innerHTML += `<button class="btn btn-success" onclick="markHabit(${habit.id}, false)">✓ Выполнено</button>`
+    } else if (isFailed) {
+      card.innerHTML += `<button class="btn btn-fail-state" onclick="markHabit(${habit.id}, true)">✗ Провалено — исправить?</button>`
+    } else {
+      const label = habit.type === 'quit' ? 'Держусь' : 'Сделал'
+      card.innerHTML += `
+        <div class="habit-actions">
+          <button class="btn btn-primary" onclick="markHabit(${habit.id}, true)">✓ ${label}</button>
+          <button class="btn btn-ghost" onclick="markHabit(${habit.id}, false)">✗</button>
+        </div>`
+    }
+
+    list.appendChild(card)
+  }
+}
+
+async function markHabit(habitId, completed) {
+  tg?.HapticFeedback?.impactOccurred('medium')
+  await api('POST', '/api/logs', { habitId, date: state.today, completed })
+  await loadTodayData()
+  renderToday()
+}
+
+// ════════════════════════════════════════════════════════
+//  ADD / EDIT HABIT
+// ════════════════════════════════════════════════════════
+function buildEmojiGrid() {
+  const grid = document.getElementById('emoji-grid')
+  grid.innerHTML = ''
+  for (const e of EMOJIS) {
+    const el = document.createElement('div')
+    el.className = 'emoji-opt'
+    el.textContent = e
+    el.onclick = () => selectEmoji(e)
+    grid.appendChild(el)
+  }
+}
+
+function openAddHabit(habit = null) {
+  state.editingHabitId = habit?.id || null
+  state.selectedType = habit?.type || null
+  state.selectedEmoji = habit?.emoji || null
+
+  document.getElementById('habit-sheet-title').textContent = habit ? 'Редактировать привычку' : 'Новая привычка'
+  document.getElementById('save-habit-btn-text').textContent = habit ? 'Сохранить' : 'Создать привычку'
+  document.getElementById('habit-name-input').value = habit?.title || ''
+
+  document.querySelectorAll('.radio-opt').forEach(el => el.classList.remove('selected'))
+  document.querySelectorAll('.emoji-opt').forEach(el => el.classList.remove('selected'))
+
+  if (habit?.type) document.getElementById('type-' + habit.type)?.classList.add('selected')
+  if (habit?.emoji) {
+    document.querySelectorAll('.emoji-opt').forEach(el => {
+      if (el.textContent === habit.emoji) el.classList.add('selected')
+    })
+  }
+
+  document.getElementById('add-habit-sheet').classList.add('open')
+}
+
+function selectType(type) {
+  state.selectedType = type
+  document.querySelectorAll('.radio-opt').forEach(el => el.classList.remove('selected'))
+  document.getElementById('type-' + type)?.classList.add('selected')
+}
+
+function selectEmoji(emoji) {
+  state.selectedEmoji = emoji
+  document.querySelectorAll('.emoji-opt').forEach(el => {
+    el.classList.toggle('selected', el.textContent === emoji)
+  })
+}
+
+async function saveHabit() {
+  const title = document.getElementById('habit-name-input').value.trim()
+  if (!title) return showToast('Введи название привычки')
+  if (!state.selectedType) return showToast('Выбери тип привычки')
+  if (!state.selectedEmoji) return showToast('Выбери эмодзи')
+
+  try {
+    if (state.editingHabitId) {
+      await api('PUT', `/api/habits/${state.editingHabitId}`, {
+        title, emoji: state.selectedEmoji
+      })
+    } else {
+      await api('POST', '/api/habits', {
+        title, type: state.selectedType, emoji: state.selectedEmoji
+      })
+    }
+    document.getElementById('add-habit-sheet').classList.remove('open')
+    await loadTodayData()
+    renderToday()
+  } catch (e) {
+    showToast('Ошибка: ' + e.message)
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  CALENDAR
+// ════════════════════════════════════════════════════════
+async function loadCalendar() {
+  if (!state.user) return
+  state.calData = await api('GET', `/api/logs/${state.user.id}/calendar/${state.calMonth}`)
+  renderCalendar()
+}
+
+function calChangeMonth(delta) {
+  const [y, m] = state.calMonth.split('-').map(Number)
+  const d = new Date(y, m - 1 + delta, 1)
+  state.calMonth = d.toLocaleDateString('sv').slice(0, 7)
+  loadCalendar()
+}
+
+function renderCalendar() {
+  const [y, m] = state.calMonth.split('-').map(Number)
+  const monthName = new Date(y, m - 1).toLocaleDateString('ru', { month: 'long', year: 'numeric' })
+  document.getElementById('cal-month-label').textContent =
+    monthName.charAt(0).toUpperCase() + monthName.slice(1)
+
+  // Build logMap: date → {total, done, failed}
+  const logMap = {}
+  for (const { habit, logs } of state.calData) {
+    for (const log of logs) {
+      if (!logMap[log.date]) logMap[log.date] = { total: 0, done: 0, failed: 0 }
+      logMap[log.date].total++
+      if (log.completed) logMap[log.date].done++
+      else logMap[log.date].failed++
+    }
+  }
+  const habitCount = state.calData.length
+
+  const grid = document.getElementById('cal-grid')
+  grid.innerHTML = ''
+  const days = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс']
+  for (const d of days) {
+    const el = document.createElement('div')
+    el.className = 'cal-dn'
+    el.textContent = d
+    grid.appendChild(el)
+  }
+
+  // Day 1 weekday (Mon=1..Sun=7)
+  const firstDay = new Date(y, m - 1, 1).getDay() || 7
+  for (let i = 1; i < firstDay; i++) {
+    const el = document.createElement('div')
+    el.className = 'cal-day x'
+    grid.appendChild(el)
+  }
+
+  const daysInMonth = new Date(y, m, 0).getDate()
+  const todayStr = state.today
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+    const el = document.createElement('div')
+    const isToday = dateStr === todayStr
+    const isFuture = dateStr > todayStr
+    const entry = logMap[dateStr]
+
+    let cls = 'cal-day'
+    if (isFuture) {
+      cls += ' future'
+    } else if (!entry) {
+      cls += ' miss'
+      el.onclick = () => openRetroSheet(dateStr)
+    } else if (entry.failed > 0) {
+      cls += ' fail'
+      el.onclick = () => openRetroSheet(dateStr)
+    } else if (entry.done === habitCount && habitCount > 0) {
+      cls += ' ok'
+      el.onclick = () => openRetroSheet(dateStr)
+    } else {
+      cls += ' partial'
+      el.onclick = () => openRetroSheet(dateStr)
+    }
+    if (isToday) cls += ' today-ring'
+
+    el.className = cls
+    el.textContent = day
+    grid.appendChild(el)
+  }
+
+  // Habit bars
+  const barsEl = document.getElementById('cal-habit-bars')
+  barsEl.innerHTML = ''
+  for (const { habit, logs } of state.calData) {
+    const doneDays = logs.filter(l => l.completed).length
+    const totalDays = new Date(y, m, 0).getDate()
+    const pct = Math.round(doneDays / totalDays * 100)
+    const streak = state.habits.find(h => h.id === habit.id)?.streak || 0
+
+    barsEl.innerHTML += `
+      <div class="hbar">
+        <div class="hbar-top">
+          <div class="hbar-name">${habit.emoji} ${habit.title}</div>
+          <div class="hbar-streak">${streak > 0 ? '🔥 ' + streak + ' дней' : '—'}</div>
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+        <div class="bar-sub">${doneDays} из ${totalDays} дней ✓</div>
+      </div>`
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  RETROACTIVE LOG
+// ════════════════════════════════════════════════════════
+function openRetroSheet(dateStr) {
+  state.retroDate = dateStr
+  state.retroSelections = {}
+
+  const d = new Date(dateStr + 'T00:00:00')
+  const label = d.toLocaleDateString('ru', { weekday:'long', day:'numeric', month:'long' })
+  document.getElementById('retro-date-title').textContent =
+    'Что было ' + label.charAt(0).toUpperCase() + label.slice(1) + '?'
+
+  const list = document.getElementById('retro-habits-list')
+  list.innerHTML = ''
+  for (const habit of state.habits) {
+    const row = document.createElement('div')
+    row.className = 'retro-row'
+    row.innerHTML = `
+      <div class="retro-name"><span>${habit.emoji}</span> ${habit.title}</div>
+      <div class="toggle-group">
+        <div class="tog" id="retro-yes-${habit.id}" onclick="setRetro(${habit.id}, true)">✓</div>
+        <div class="tog" id="retro-no-${habit.id}" onclick="setRetro(${habit.id}, false)">✗</div>
+      </div>`
+    list.appendChild(row)
+  }
+
+  document.getElementById('retro-sheet').classList.add('open')
+}
+
+function setRetro(habitId, val) {
+  state.retroSelections[habitId] = val
+  document.getElementById(`retro-yes-${habitId}`).className = 'tog' + (val === true ? ' yes' : '')
+  document.getElementById(`retro-no-${habitId}`).className = 'tog' + (val === false ? ' no' : '')
+}
+
+async function saveRetroLog() {
+  const entries = Object.entries(state.retroSelections)
+  if (entries.length === 0) {
+    document.getElementById('retro-sheet').classList.remove('open')
+    return
+  }
+  try {
+    for (const [habitId, completed] of entries) {
+      await api('POST', '/api/logs', {
+        habitId: parseInt(habitId), date: state.retroDate, completed
+      })
+    }
+    document.getElementById('retro-sheet').classList.remove('open')
+    await loadCalendar()
+    showToast('Сохранено ✓')
+  } catch (e) {
+    showToast('Ошибка: ' + e.message)
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  FRIENDS
+// ════════════════════════════════════════════════════════
+async function loadFriends() {
+  if (!state.currentGroupId) {
+    document.getElementById('friends-list').innerHTML =
+      '<div style="color:var(--muted);text-align:center;padding:40px">Ты не в группе.<br>Попроси кого-то запустить /setup в групповом чате.</div>'
+    return
+  }
+  try {
+    const members = await api('GET', `/api/group/${state.currentGroupId}/members`)
+    renderFriends(members)
+  } catch (e) {
+    showToast('Ошибка загрузки друзей')
+  }
+}
+
+function renderFriends(members) {
+  const grp = state.groups.find(g => g.id === state.currentGroupId)
+  document.getElementById('friends-sec-label').textContent =
+    `${members.length} участников · ${grp?.title || ''}`
+
+  const list = document.getElementById('friends-list')
+  list.innerHTML = ''
+
+  for (const member of members) {
+    const isSelf = member.id === state.user?.id
+    const colors = ['#FF6B6B,#FF8E53','#6C63FF,#a855f7','#11998e,#38ef7d','#f093fb,#f5576c','#4facfe,#00f2fe']
+    const colorIdx = member.id % colors.length
+    const el = document.createElement('div')
+    el.className = 'friend-card'
+    el.innerHTML = `
+      <div class="friend-header">
+        <div class="avatar" style="background:linear-gradient(135deg,${colors[colorIdx]})">
+          ${member.first_name[0].toUpperCase()}
+        </div>
+        <div>
+          <div class="friend-name">${member.first_name}${isSelf ? ' (ты)' : ''}</div>
+          <div class="friend-status ${member.markedToday ? '' : 'no'}">
+            ${member.markedToday ? '✓ Отметил сегодня' : '— Не отметил'}
+          </div>
+        </div>
+      </div>
+      <div class="friend-habits">
+        ${member.habits.map(h => `
+          <div class="friend-habit">
+            <span class="friend-habit-name">${h.emoji} ${h.title}</span>
+            <span class="friend-habit-streak">${h.streak > 0 ? '🔥 ' + h.streak + ' дн.' : '—'}</span>
+          </div>`).join('')}
+      </div>`
+    list.appendChild(el)
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  GROUP SWITCHER
+// ════════════════════════════════════════════════════════
+function updateGroupSwitcher() {
+  const grp = state.groups.find(g => g.id === state.currentGroupId)
+  document.getElementById('current-group-name').textContent = grp?.title || 'Нет группы'
+}
+
+function openGroupSwitcher() {
+  const list = document.getElementById('group-list')
+  list.innerHTML = ''
+  for (const g of state.groups) {
+    const btn = document.createElement('button')
+    btn.style.cssText = 'width:100%;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;color:white;font-size:15px;cursor:pointer;margin-bottom:8px;text-align:left'
+    btn.textContent = g.title
+    if (g.id === state.currentGroupId) btn.style.borderColor = 'var(--accent)'
+    btn.onclick = () => {
+      state.currentGroupId = g.id
+      updateGroupSwitcher()
+      document.getElementById('group-switcher-sheet').classList.remove('open')
+      loadFriends()
+    }
+    list.appendChild(btn)
+  }
+  document.getElementById('group-switcher-sheet').classList.add('open')
+}
+
+// ════════════════════════════════════════════════════════
+//  NAVIGATION
+// ════════════════════════════════════════════════════════
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'))
+  document.querySelectorAll('.nav-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.screen === name)
+  })
+  document.getElementById('screen-' + name).classList.add('active')
+
+  // Close any open sheets
+  document.querySelectorAll('.sheet-overlay').forEach(s => s.classList.remove('open'))
+
+  if (name === 'calendar') loadCalendar()
+  if (name === 'friends') loadFriends()
+}
+
+// Close sheets on overlay click
+document.querySelectorAll('.sheet-overlay').forEach(overlay => {
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) overlay.classList.remove('open')
+  })
+})
+
+// ════════════════════════════════════════════════════════
+//  UTILS
+// ════════════════════════════════════════════════════════
+function showToast(msg) {
+  const el = document.getElementById('toast')
+  el.textContent = msg
+  el.classList.add('show')
+  setTimeout(() => el.classList.remove('show'), 2500)
+}
+
+// ════════════════════════════════════════════════════════
+//  START
+// ════════════════════════════════════════════════════════
+init()
+</script>
+</body>
+</html>
