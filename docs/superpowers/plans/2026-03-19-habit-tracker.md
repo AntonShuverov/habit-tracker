@@ -1,10 +1,1095 @@
+# Habit Tracker Implementation Plan
+
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a Telegram Mini App + Bot for tracking personal habits in a closed group of friends/family.
+
+**Architecture:** Node.js monolith — Express serves both the REST API and the static Mini App HTML. SQLite stores all data via better-sqlite3 (synchronous). The Telegram bot runs in the same process using polling. Streak logic lives in an isolated pure module for testability.
+
+**Tech Stack:** Node.js 18+, Express 4, better-sqlite3, node-telegram-bot-api, node-cron, dotenv
+
+---
+
+## File Map
+
+```
+habit-tracker/
+├── server.js           — Express app init, middleware, route mounting, static serving
+├── database.js         — SQLite connection, schema creation, all DB query functions
+├── bot.js              — Telegram bot setup, commands (/start /setup /join /stats), cron jobs
+├── streak.js           — Pure streak calculation function (no side effects, unit-testable)
+├── public/
+│   └── index.html      — Entire Mini App: HTML + CSS + JS (all screens, no build step)
+├── data/               — SQLite file lives here (.gitignored)
+├── tests/
+│   └── streak.test.js  — Unit tests using node:test (built-in, Node 18+)
+├── .env                — Secrets (gitignored)
+├── .env.example        — Template for env vars
+├── .gitignore
+└── package.json
+```
+
+---
+
+## Chunk 1: Project Setup + Database + Streak Logic
+
+### Task 1: Project scaffold
+
+**Files:**
+- Create: `package.json`
+- Create: `.env.example`
+- Create: `.gitignore`
+
+- [ ] **Step 1: Create package.json**
+
+```json
+{
+  "name": "habit-tracker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/streak.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.64.0"
+  }
+}
+```
+
+- [ ] **Step 2: Create .env.example**
+
+```
+BOT_TOKEN=your_bot_token_here
+WEBAPP_URL=https://your-domain.com
+PORT=3000
+DATABASE_PATH=./data/habits.db
+ENABLE_CRON=false
+CRON_TIMEZONE=Europe/Moscow
+```
+
+- [ ] **Step 3: Create .gitignore**
+
+```
+node_modules/
+.env
+data/
+.superpowers/
+```
+
+- [ ] **Step 4: Create .env by copying .env.example**
+
+```bash
+cp .env.example .env
+```
+
+Then fill in `BOT_TOKEN` with your actual bot token from [@BotFather](https://t.me/BotFather).
+
+- [ ] **Step 5: Install dependencies**
+
+```bash
+npm install
+```
+
+Expected: `node_modules/` created, no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git init
+git add package.json .env.example .gitignore
+git commit -m "chore: project scaffold"
+```
+
+---
+
+### Task 2: Database schema and queries
+
+**Files:**
+- Create: `database.js`
+
+- [ ] **Step 1: Create database.js**
+
+```js
+// database.js
+import Database from 'better-sqlite3'
+import { mkdirSync } from 'fs'
+import { dirname } from 'path'
+
+let db
+
+export function getDb() {
+  return db
+}
+
+export function initDb(path) {
+  mkdirSync(dirname(path), { recursive: true })
+  db = new Database(path)
+  db.pragma('journal_mode = WAL')
+  db.pragma('foreign_keys = ON')
+  createSchema()
+  return db
+}
+
+function createSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id INTEGER UNIQUE NOT NULL,
+      username TEXT,
+      first_name TEXT NOT NULL,
+      created_at TEXT DEFAULT (date('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_group_id INTEGER UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      created_at TEXT DEFAULT (date('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS group_members (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL REFERENCES groups(id),
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      joined_at TEXT DEFAULT (date('now')),
+      UNIQUE(group_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS habits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      title TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('quit','build')),
+      emoji TEXT NOT NULL DEFAULT '✅',
+      created_at TEXT DEFAULT (date('now')),
+      is_active INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS habit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      habit_id INTEGER NOT NULL REFERENCES habits(id),
+      user_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      completed INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(habit_id, date)
+    );
+  `)
+}
+
+// ── Users ──────────────────────────────────────────────
+
+export function upsertUser({ telegram_id, username, first_name }) {
+  return db.prepare(`
+    INSERT INTO users (telegram_id, username, first_name)
+    VALUES (@telegram_id, @username, @first_name)
+    ON CONFLICT(telegram_id) DO UPDATE SET
+      username = excluded.username,
+      first_name = excluded.first_name
+    RETURNING *
+  `).get({ telegram_id, username: username || null, first_name })
+}
+
+export function getUserByTelegramId(telegram_id) {
+  return db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id)
+}
+
+// ── Groups ─────────────────────────────────────────────
+
+export function upsertGroup({ telegram_group_id, title }) {
+  return db.prepare(`
+    INSERT INTO groups (telegram_group_id, title)
+    VALUES (@telegram_group_id, @title)
+    ON CONFLICT(telegram_group_id) DO UPDATE SET title = excluded.title
+    RETURNING *
+  `).get({ telegram_group_id, title })
+}
+
+export function getGroupById(id) {
+  return db.prepare('SELECT * FROM groups WHERE id = ?').get(id)
+}
+
+export function getGroupsByUserId(user_id) {
+  return db.prepare(`
+    SELECT g.* FROM groups g
+    JOIN group_members gm ON gm.group_id = g.id
+    WHERE gm.user_id = ?
+  `).all(user_id)
+}
+
+export function getAllGroups() {
+  return db.prepare('SELECT * FROM groups').all()
+}
+
+// ── Group Members ──────────────────────────────────────
+
+export function addGroupMember({ group_id, user_id }) {
+  return db.prepare(`
+    INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)
+  `).run(group_id, user_id)
+}
+
+export function getGroupMembers(group_id) {
+  return db.prepare(`
+    SELECT u.* FROM users u
+    JOIN group_members gm ON gm.user_id = u.id
+    WHERE gm.group_id = ?
+  `).all(group_id)
+}
+
+export function isGroupMember({ group_id, user_id }) {
+  return !!db.prepare(
+    'SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?'
+  ).get(group_id, user_id)
+}
+
+// ── Habits ─────────────────────────────────────────────
+
+export function createHabit({ user_id, title, type, emoji }) {
+  return db.prepare(`
+    INSERT INTO habits (user_id, title, type, emoji)
+    VALUES (@user_id, @title, @type, @emoji)
+    RETURNING *
+  `).get({ user_id, title, type, emoji })
+}
+
+export function getHabitsByUserId(user_id) {
+  return db.prepare(
+    'SELECT * FROM habits WHERE user_id = ? AND is_active = 1 ORDER BY created_at'
+  ).all(user_id)
+}
+
+export function getHabitById(id) {
+  return db.prepare('SELECT * FROM habits WHERE id = ?').get(id)
+}
+
+export function updateHabit(id, { title, emoji }) {
+  return db.prepare(`
+    UPDATE habits SET title = @title, emoji = @emoji WHERE id = @id RETURNING *
+  `).get({ id, title, emoji })
+}
+
+export function archiveHabit(id) {
+  return db.prepare('UPDATE habits SET is_active = 0 WHERE id = ?').run(id)
+}
+
+// ── Habit Logs ─────────────────────────────────────────
+
+export function upsertLog({ habit_id, user_id, date, completed }) {
+  return db.prepare(`
+    INSERT INTO habit_logs (habit_id, user_id, date, completed)
+    VALUES (@habit_id, @user_id, @date, @completed)
+    ON CONFLICT(habit_id, date) DO UPDATE SET
+      completed = excluded.completed,
+      created_at = datetime('now')
+    RETURNING *
+  `).get({ habit_id, user_id, date, completed: completed ? 1 : 0 })
+}
+
+export function getLogsByUserAndDate(user_id, date) {
+  return db.prepare(`
+    SELECT hl.*, h.title, h.emoji, h.type FROM habit_logs hl
+    JOIN habits h ON h.id = hl.habit_id
+    WHERE hl.user_id = ? AND hl.date = ?
+  `).all(user_id, date)
+}
+
+export function getLogsByHabitAndMonth(habit_id, month) {
+  // month = 'YYYY-MM'
+  return db.prepare(`
+    SELECT * FROM habit_logs
+    WHERE habit_id = ? AND date LIKE ?
+    ORDER BY date DESC
+  `).all(habit_id, `${month}%`)
+}
+
+export function getLogsForStreakCalc(habit_id) {
+  // Last 366 days for streak calculation
+  return db.prepare(`
+    SELECT date, completed FROM habit_logs
+    WHERE habit_id = ?
+    ORDER BY date DESC
+    LIMIT 366
+  `).all(habit_id)
+}
+```
+
+- [ ] **Step 2: Verify schema creates without error**
+
+```bash
+node -e "
+import('./database.js').then(({ initDb }) => {
+  initDb('./data/test.db')
+  console.log('Schema OK')
+})
+"
+```
+
+Expected output: `Schema OK`
+
+- [ ] **Step 3: Delete test DB**
+
+```bash
+rm ./data/test.db
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add database.js
+git commit -m "feat: database schema and query functions"
+```
+
+---
+
+### Task 3: Streak calculation (TDD)
+
+**Files:**
+- Create: `streak.js`
+- Create: `tests/streak.test.js`
+
+- [ ] **Step 1: Create tests directory**
+
+```bash
+mkdir -p tests
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `tests/streak.test.js`:
+
+```js
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { calculateStreak } from '../streak.js'
+
+const TODAY = '2026-03-19'
+
+test('returns 0 when no logs', () => {
+  assert.equal(calculateStreak([], TODAY), 0)
+})
+
+test('returns 1 when only today is completed', () => {
+  const logs = [{ date: TODAY, completed: 1 }]
+  assert.equal(calculateStreak(logs, TODAY), 1)
+})
+
+test('grace period: yesterday completed, today not logged → streak = 1', () => {
+  const logs = [{ date: '2026-03-18', completed: 1 }]
+  assert.equal(calculateStreak(logs, TODAY), 1)
+})
+
+test('today failed → streak = 0 immediately', () => {
+  const logs = [
+    { date: TODAY, completed: 0 },
+    { date: '2026-03-18', completed: 1 },
+  ]
+  assert.equal(calculateStreak(logs, TODAY), 0)
+})
+
+test('streak breaks on false in past', () => {
+  const logs = [
+    { date: '2026-03-18', completed: 0 },
+    { date: '2026-03-17', completed: 1 },
+    { date: '2026-03-16', completed: 1 },
+  ]
+  assert.equal(calculateStreak(logs, TODAY), 0)
+})
+
+test('counts consecutive days correctly', () => {
+  const logs = [
+    { date: '2026-03-18', completed: 1 },
+    { date: '2026-03-17', completed: 1 },
+    { date: '2026-03-16', completed: 1 },
+  ]
+  // today not logged → grace, streak from 18→16 = 3
+  assert.equal(calculateStreak(logs, TODAY), 3)
+})
+
+test('gap in past breaks streak', () => {
+  const logs = [
+    { date: '2026-03-18', completed: 1 },
+    // 2026-03-17 missing
+    { date: '2026-03-16', completed: 1 },
+  ]
+  assert.equal(calculateStreak(logs, TODAY), 1)
+})
+
+test('today + consecutive past = total', () => {
+  const logs = [
+    { date: TODAY, completed: 1 },
+    { date: '2026-03-18', completed: 1 },
+    { date: '2026-03-17', completed: 1 },
+  ]
+  assert.equal(calculateStreak(logs, TODAY), 3)
+})
+```
+
+- [ ] **Step 2: Run tests — verify they fail**
+
+```bash
+npm test
+```
+
+Expected: all tests fail with `Cannot find module '../streak.js'`
+
+- [ ] **Step 3: Create streak.js**
+
+```js
+// streak.js
+
+/**
+ * Calculate current streak from habit logs.
+ * @param {Array<{date: string, completed: 0|1}>} logs - any order, deduplicated
+ * @param {string} today - 'YYYY-MM-DD' string (server date in configured timezone)
+ * @returns {number} current streak length
+ */
+export function calculateStreak(logs, today) {
+  if (logs.length === 0) return 0
+
+  const logMap = new Map(logs.map(l => [l.date, l.completed]))
+
+  // Helper: subtract one day from a YYYY-MM-DD string
+  function prevDay(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() - 1)
+    return d.toISOString().slice(0, 10)
+  }
+
+  let streak = 0
+  let cursor = today
+
+  // Handle today
+  if (!logMap.has(today)) {
+    // Grace period: today not logged yet, start counting from yesterday
+    cursor = prevDay(today)
+  } else if (!logMap.get(today)) {
+    // Today explicitly failed
+    return 0
+  } else {
+    // Today completed
+    streak = 1
+    cursor = prevDay(today)
+  }
+
+  // Walk backwards
+  for (let i = 0; i < 365; i++) {
+    if (!logMap.has(cursor)) break      // gap = streak ends
+    if (!logMap.get(cursor)) break      // false = streak ends
+    streak++
+    cursor = prevDay(cursor)
+  }
+
+  return streak
+}
+```
+
+- [ ] **Step 4: Run tests — verify all pass**
+
+```bash
+npm test
+```
+
+Expected: `8 passing`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add streak.js tests/streak.test.js
+git commit -m "feat: streak calculation with TDD"
+```
+
+---
+
+## Chunk 2: Express API
+
+### Task 4: Express server + auth middleware
+
+**Files:**
+- Create: `server.js`
+
+- [ ] **Step 1: Create server.js**
+
+**Note:** `bot.js` doesn't exist yet — do NOT import it here. It will be added in Chunk 3, Task 5, Step 2.
+
+```js
+// server.js
+import 'dotenv/config'
+import express from 'express'
+import { initDb } from './database.js'
+import habitsRouter from './routes/habits.js'
+import logsRouter from './routes/logs.js'
+import groupRouter from './routes/group.js'
+
+const app = express()
+app.use(express.json())
+app.use(express.static('public'))
+
+// Init DB
+initDb(process.env.DATABASE_PATH || './data/habits.db')
+
+// Auth middleware — parses Telegram initData, attaches req.telegramUser
+app.use('/api', (req, res, next) => {
+  const auth = req.headers.authorization || ''
+  const initData = auth.startsWith('tma ') ? auth.slice(4) : ''
+  if (!initData) return res.status(401).json({ error: 'Missing auth' })
+
+  try {
+    const params = new URLSearchParams(initData)
+    const userJson = params.get('user')
+    if (!userJson) return res.status(401).json({ error: 'No user in initData' })
+    req.telegramUser = JSON.parse(userJson)
+    next()
+  } catch {
+    return res.status(401).json({ error: 'Invalid initData' })
+  }
+})
+
+// Auth endpoint
+app.post('/api/auth', async (req, res) => {
+  try {
+    const { id, username, first_name } = req.telegramUser
+    const { upsertUser, getGroupsByUserId } = await import('./database.js')
+    const user = upsertUser({ telegram_id: id, username, first_name })
+    const groups = getGroupsByUserId(user.id)
+    res.json({ user, groups })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.use('/api/habits', habitsRouter)
+app.use('/api/logs', logsRouter)
+app.use('/api/group', groupRouter)
+
+// Stats endpoint (streaks + last 30 days per habit)
+app.get('/api/stats/:userId', async (req, res) => {
+  try {
+    const { upsertUser, getHabitsByUserId, getLogsForStreakCalc, getLogsByHabitAndMonth } = await import('./database.js')
+    const { calculateStreak } = await import('./streak.js')
+    const tgUser = req.telegramUser
+    const user = upsertUser({ telegram_id: tgUser.id, username: tgUser.username, first_name: tgUser.first_name })
+    if (user.id !== parseInt(req.params.userId)) return res.status(403).json({ error: 'Forbidden' })
+    const today = new Date().toLocaleDateString('sv', { timeZone: process.env.CRON_TIMEZONE || 'UTC' })
+    const month = today.slice(0, 7)
+    const habits = getHabitsByUserId(user.id).map(habit => {
+      const logs = getLogsForStreakCalc(habit.id)
+      const monthLogs = getLogsByHabitAndMonth(habit.id, month)
+      return { ...habit, streak: calculateStreak(logs, today), monthLogs }
+    })
+    res.json(habits)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+const PORT = process.env.PORT || 3000
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`))
+
+export default app
+```
+
+- [ ] **Step 2: Create routes directory**
+
+```bash
+mkdir -p routes
+```
+
+- [ ] **Step 3: Create routes/habits.js**
+
+```js
+// routes/habits.js
+import { Router } from 'express'
+import {
+  getHabitsByUserId, createHabit, getHabitById, updateHabit, archiveHabit, upsertUser
+} from '../database.js'
+import { getLogsForStreakCalc } from '../database.js'
+import { calculateStreak } from '../streak.js'
+
+const router = Router()
+
+// GET /api/habits/:userId
+router.get('/:userId', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+
+  // Auth: can only read own habits
+  if (user.id !== parseInt(req.params.userId)) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+
+  const today = new Date().toLocaleDateString('sv', {
+    timeZone: process.env.CRON_TIMEZONE || 'UTC'
+  })
+
+  const habits = getHabitsByUserId(user.id).map(habit => {
+    const logs = getLogsForStreakCalc(habit.id)
+    return { ...habit, streak: calculateStreak(logs, today) }
+  })
+
+  res.json(habits)
+})
+
+// POST /api/habits
+router.post('/', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  const { title, type, emoji } = req.body
+  if (!title || !type || !emoji) {
+    return res.status(400).json({ error: 'title, type, emoji required' })
+  }
+  if (!['quit', 'build'].includes(type)) {
+    return res.status(400).json({ error: 'type must be quit or build' })
+  }
+  const habit = createHabit({ user_id: user.id, title, type, emoji })
+  res.status(201).json(habit)
+})
+
+// PUT /api/habits/:id
+router.put('/:id', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  const habit = getHabitById(parseInt(req.params.id))
+  if (!habit) return res.status(404).json({ error: 'Not found' })
+  if (habit.user_id !== user.id) return res.status(403).json({ error: 'Forbidden' })
+
+  const { title, emoji, is_active } = req.body
+  if (is_active === 0) {
+    archiveHabit(habit.id)
+    return res.json({ archived: true })
+  }
+  const updated = updateHabit(habit.id, {
+    title: title ?? habit.title,
+    emoji: emoji ?? habit.emoji
+  })
+  res.json(updated)
+})
+
+export default router
+```
+
+- [ ] **Step 4: Create routes/logs.js**
+
+```js
+// routes/logs.js
+import { Router } from 'express'
+import {
+  upsertUser, getLogsByUserAndDate, upsertLog,
+  getHabitsByUserId, getLogsByHabitAndMonth
+} from '../database.js'
+
+const router = Router()
+
+// GET /api/logs/:userId/calendar/:month  — MUST be before /:userId/:date to avoid shadowing
+// month = 'YYYY-MM'
+router.get('/:userId/calendar/:month', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  if (user.id !== parseInt(req.params.userId)) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+  const habits = getHabitsByUserId(user.id)
+  const result = habits.map(habit => ({
+    habit,
+    logs: getLogsByHabitAndMonth(habit.id, req.params.month)
+  }))
+  res.json(result)
+})
+
+// GET /api/logs/:userId/:date
+router.get('/:userId/:date', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  if (user.id !== parseInt(req.params.userId)) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+  const logs = getLogsByUserAndDate(user.id, req.params.date)
+  res.json(logs)
+})
+
+// POST /api/logs
+router.post('/', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  const { habitId, date, completed } = req.body
+  if (!habitId || !date || completed === undefined) {
+    return res.status(400).json({ error: 'habitId, date, completed required' })
+  }
+  const log = upsertLog({ habit_id: habitId, user_id: user.id, date, completed })
+  res.json(log)
+})
+
+export default router
+```
+
+- [ ] **Step 5: Create routes/group.js**
+
+```js
+// routes/group.js
+import { Router } from 'express'
+import {
+  upsertUser, getGroupById, isGroupMember, getGroupMembers,
+  getHabitsByUserId, getLogsByUserAndDate, getLogsForStreakCalc,
+  getGroupsByUserId
+} from '../database.js'
+import { calculateStreak } from '../streak.js'
+
+const router = Router()
+
+// GET /api/group/user/groups — MUST be before /:groupId/members to avoid shadowing
+router.get('/user/groups', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  res.json(getGroupsByUserId(user.id))
+})
+
+// GET /api/group/:groupId/members
+router.get('/:groupId/members', (req, res) => {
+  const { telegramUser } = req
+  const user = upsertUser({
+    telegram_id: telegramUser.id,
+    username: telegramUser.username,
+    first_name: telegramUser.first_name
+  })
+  const groupId = parseInt(req.params.groupId)
+  if (!isGroupMember({ group_id: groupId, user_id: user.id })) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+
+  const today = new Date().toLocaleDateString('sv', {
+    timeZone: process.env.CRON_TIMEZONE || 'UTC'
+  })
+
+  const members = getGroupMembers(groupId).map(member => {
+    const habits = getHabitsByUserId(member.id).map(habit => {
+      const logs = getLogsForStreakCalc(habit.id)
+      return { ...habit, streak: calculateStreak(logs, today) }
+    })
+    const todayLogs = getLogsByUserAndDate(member.id, today)
+    const markedToday = todayLogs.length > 0
+    return { ...member, habits, markedToday }
+  })
+
+  res.json(members)
+})
+
+export default router
+```
+
+- [ ] **Step 6: Test server starts**
+
+```bash
+node server.js
+```
+
+Expected: `Server running on http://localhost:3000`
+
+Stop with Ctrl+C.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add server.js routes/
+git commit -m "feat: Express API with auth middleware and all route handlers"
+```
+
+---
+
+## Chunk 3: Bot + Cron
+
+### Task 5: Telegram bot commands
+
+**Files:**
+- Create: `bot.js`
+
+- [ ] **Step 1: Create bot.js**
+
+```js
+// bot.js
+import TelegramBot from 'node-telegram-bot-api'
+import cron from 'node-cron'
+import {
+  upsertUser, upsertGroup, addGroupMember, getGroupById,
+  getAllGroups, getGroupMembers, getHabitsByUserId,
+  getLogsByUserAndDate, getLogsForStreakCalc, getUserByTelegramId
+} from './database.js'
+import { calculateStreak } from './streak.js'
+
+let bot
+
+export function setupBot() {
+  if (!process.env.BOT_TOKEN) {
+    console.warn('BOT_TOKEN not set — bot disabled')
+    return
+  }
+
+  bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true })
+
+  // /start — greeting + open Mini App button (or group join prompt)
+  bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
+    const tgUser = msg.from
+    const user = upsertUser({
+      telegram_id: tgUser.id,
+      username: tgUser.username,
+      first_name: tgUser.first_name
+    })
+
+    const webAppUrl = process.env.WEBAPP_URL
+    await bot.sendMessage(msg.chat.id,
+      `Привет, ${tgUser.first_name}! 👋\n\nОткрой трекер привычек:`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '📅 Открыть трекер', web_app: { url: webAppUrl } }
+          ]]
+        }
+      }
+    )
+  })
+
+  // /setup — group chat only, creates/links group in DB
+  bot.onText(/\/setup/, async (msg) => {
+    if (msg.chat.type === 'private') {
+      return bot.sendMessage(msg.chat.id, 'Команда /setup используется в групповом чате.')
+    }
+    const group = upsertGroup({
+      telegram_group_id: msg.chat.id,
+      title: msg.chat.title
+    })
+    await bot.sendMessage(msg.chat.id,
+      `✅ Группа "${group.title}" настроена!\n\n` +
+      `Каждый участник должен написать мне в личку:\n` +
+      `/join ${group.id}`
+    )
+  })
+
+  // /join <group_db_id> — DM only, links user to group
+  bot.onText(/\/join(?:\s+(\d+))?/, async (msg, match) => {
+    if (msg.chat.type !== 'private') {
+      return bot.sendMessage(msg.chat.id, 'Команда /join работает только в личке.')
+    }
+    const groupId = parseInt(match?.[1])
+    if (!groupId) {
+      return bot.sendMessage(msg.chat.id, 'Укажи ID группы: /join 42')
+    }
+    const group = getGroupById(groupId)
+    if (!group) {
+      return bot.sendMessage(msg.chat.id, '❌ Группа не найдена. Попроси администратора запустить /setup в группе.')
+    }
+    const user = upsertUser({
+      telegram_id: msg.from.id,
+      username: msg.from.username,
+      first_name: msg.from.first_name
+    })
+    addGroupMember({ group_id: group.id, user_id: user.id })
+    await bot.sendMessage(msg.chat.id,
+      `✅ Ты добавлен в группу "${group.title}"!\n\nТеперь открой трекер:`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '📅 Открыть трекер', web_app: { url: process.env.WEBAPP_URL } }
+          ]]
+        }
+      }
+    )
+  })
+
+  // /stats — group chat, posts today's summary
+  bot.onText(/\/stats/, async (msg) => {
+    if (msg.chat.type === 'private') {
+      return bot.sendMessage(msg.chat.id, '/stats работает в групповом чате.')
+    }
+    await postGroupStats(msg.chat.id)
+  })
+
+  // Setup cron if enabled
+  if (process.env.ENABLE_CRON === 'true') {
+    setupCron()
+  }
+
+  console.log('Bot started')
+  return bot
+}
+
+async function postGroupStats(chatId) {
+  // Find group by telegram_group_id
+  const { getDb } = await import('./database.js')
+  const group = getDb().prepare('SELECT * FROM groups WHERE telegram_group_id = ?').get(chatId)
+  if (!group) return
+
+  const today = new Date().toLocaleDateString('sv', {
+    timeZone: process.env.CRON_TIMEZONE || 'UTC'
+  })
+
+  const members = getGroupMembers(group.id)
+  if (members.length === 0) return
+
+  let text = `📊 *Прогресс сегодня, ${today}*\n\n`
+
+  for (const member of members) {
+    const habits = getHabitsByUserId(member.id)
+    const logs = getLogsByUserAndDate(member.id, today)
+    const logMap = new Map(logs.map(l => [l.habit_id, l.completed]))
+
+    const marked = habits.some(h => logMap.has(h.id))
+    text += `*${member.first_name}* ${marked ? '✓' : '—'}\n`
+
+    for (const habit of habits) {
+      const allLogs = getLogsForStreakCalc(habit.id)
+      const streak = calculateStreak(allLogs, today)
+      const status = logMap.has(habit.id)
+        ? (logMap.get(habit.id) ? '✅' : '❌')
+        : '⬜'
+      text += `  ${status} ${habit.emoji} ${habit.title}`
+      if (streak > 0) text += ` 🔥${streak}д`
+      text += '\n'
+    }
+    text += '\n'
+  }
+
+  await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' })
+}
+
+function setupCron() {
+  const tz = process.env.CRON_TIMEZONE || 'UTC'
+
+  // 21:00 — daily reminder
+  cron.schedule('0 21 * * *', async () => {
+    const groups = getAllGroups()
+    for (const group of groups) {
+      try {
+        await bot.sendMessage(group.telegram_group_id,
+          '🔔 Эй! Не забудьте отметить привычки сегодня',
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '📅 Открыть трекер', web_app: { url: process.env.WEBAPP_URL } }
+              ]]
+            }
+          }
+        )
+      } catch (e) {
+        console.error(`Failed to send reminder to group ${group.id}:`, e.message)
+      }
+    }
+  }, { timezone: tz })
+
+  // 22:00 — streak milestone check
+  cron.schedule('0 22 * * *', async () => {
+    const MILESTONES = [7, 14, 30, 60, 100]
+    const today = new Date().toLocaleDateString('sv', { timeZone: tz })
+    const groups = getAllGroups()
+
+    for (const group of groups) {
+      const members = getGroupMembers(group.id)
+      for (const member of members) {
+        const habits = getHabitsByUserId(member.id)
+        for (const habit of habits) {
+          const logs = getLogsForStreakCalc(habit.id)
+          const streak = calculateStreak(logs, today)
+          if (MILESTONES.includes(streak)) {
+            try {
+              await bot.sendMessage(group.telegram_group_id,
+                `🔥 Поздравляем ${member.first_name}! ` +
+                `${habit.emoji} ${habit.title} — уже ${streak} дней подряд!`
+              )
+            } catch (e) {
+              console.error(`Failed to send milestone to group ${group.id}:`, e.message)
+            }
+          }
+        }
+      }
+    }
+  }, { timezone: tz })
+
+  console.log('Cron jobs scheduled')
+}
+```
+
+- [ ] **Step 2: Wire bot into server.js — add import at top and call after DB init**
+
+In `server.js`, add the import at the top of the file (after the other imports):
+
+```js
+import { setupBot } from './bot.js'
+```
+
+Then after the `initDb(...)` line, add:
+
+```js
+// Start bot
+setupBot()
+```
+
+- [ ] **Step 3: Test bot starts (need real BOT_TOKEN)**
+
+```bash
+node server.js
+```
+
+Expected: `Bot started` and `Server running on http://localhost:3000`
+
+Stop with Ctrl+C.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add bot.js server.js
+git commit -m "feat: telegram bot commands and cron notifications"
+```
+
+---
+
+## Chunk 4: Mini App Frontend
+
+### Task 6: Mini App HTML shell + Today screen
+
+**Files:**
+- Create: `public/index.html`
+
+- [ ] **Step 1: Create public/index.html with shell, styles, Today screen**
+
+```html
 <!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Habit Tracker</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
@@ -222,7 +1307,6 @@
   .cal-day.ok { background: #1a3a1a; color: var(--success); font-weight: 600; }
   .cal-day.partial { background: #2a2000; color: #FFC107; font-weight: 600; }
   .cal-day.fail { background: #3a1010; color: var(--fail); font-weight: 600; }
-  .cal-day.skipped { background: #0d1a2e; color: #4a9eff; font-weight: 600; }
   .cal-day.miss { background: #1a1a1a; color: #444; border: 1px dashed #333; }
   .cal-day.today-ring { box-shadow: 0 0 0 2px var(--accent); }
 
@@ -338,11 +1422,10 @@
     <div class="cal-grid" id="cal-grid"></div>
 
     <div class="legend">
-      <div class="legend-item"><div class="legend-dot" style="background:var(--success)"></div>Все ✓</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#FFC107"></div>✓ и ✗</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--fail)"></div>Все ✗</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#4a9eff"></div>Не всё отмечено</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#1a1a1a;border:1px dashed #444"></div>Пусто</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--success)"></div>Все выполнил</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#FFC107"></div>Частично</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--fail)"></div>Провалил</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1a1a1a;border:1px dashed #444"></div>Нажми — заполни</div>
     </div>
 
     <div class="sec-label">Прогресс в месяце</div>
@@ -679,12 +1762,7 @@ async function saveHabit() {
 // ════════════════════════════════════════════════════════
 async function loadCalendar() {
   if (!state.user) return
-  const [calData, habits] = await Promise.all([
-    api('GET', `/api/logs/${state.user.id}/calendar/${state.calMonth}`),
-    api('GET', `/api/habits/${state.user.id}`)
-  ])
-  state.calData = calData
-  state.habits = habits
+  state.calData = await api('GET', `/api/logs/${state.user.id}/calendar/${state.calMonth}`)
   renderCalendar()
 }
 
@@ -747,18 +1825,15 @@ function renderCalendar() {
     } else if (!entry) {
       cls += ' miss'
       el.onclick = () => openRetroSheet(dateStr)
-    } else {
+    } else if (entry.failed > 0) {
+      cls += ' fail'
       el.onclick = () => openRetroSheet(dateStr)
-      const allLogged = entry.total === habitCount
-      if (!allLogged) {
-        cls += ' skipped'  // some habits not logged at all
-      } else if (entry.done === habitCount) {
-        cls += ' ok'       // all done
-      } else if (entry.failed === habitCount) {
-        cls += ' fail'     // all failed
-      } else {
-        cls += ' partial'  // mix of done and failed
-      }
+    } else if (entry.done === habitCount && habitCount > 0) {
+      cls += ' ok'
+      el.onclick = () => openRetroSheet(dateStr)
+    } else {
+      cls += ' partial'
+      el.onclick = () => openRetroSheet(dateStr)
     }
     if (isToday) cls += ' today-ring'
 
@@ -853,7 +1928,7 @@ async function loadFriends() {
     return
   }
   try {
-    const members = await api('GET', `/api/group/${state.currentGroupId}/members?date=${state.today}`)
+    const members = await api('GET', `/api/group/${state.currentGroupId}/members`)
     renderFriends(members)
   } catch (e) {
     showToast('Ошибка загрузки друзей')
@@ -965,3 +2040,116 @@ init()
 </script>
 </body>
 </html>
+```
+
+- [ ] **Step 2: Start the server and open http://localhost:3000**
+
+```bash
+node server.js
+```
+
+Open in browser. The loading spinner should disappear and the Today screen should appear (empty habits list — that's expected, no habits created yet).
+
+- [ ] **Step 3: Test adding a habit via the UI**
+
+1. Click "Добавить привычку"
+2. Enter a name, select type and emoji
+3. Click "Создать привычку"
+4. Habit should appear on Today screen
+
+- [ ] **Step 4: Test marking a habit**
+
+Click ✓ on a habit. Card should turn green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add public/index.html
+git commit -m "feat: complete Mini App frontend (all screens)"
+```
+
+---
+
+### Task 7: README and final smoke test
+
+**Files:**
+- Create: `README.md`
+
+- [ ] **Step 1: Create README.md**
+
+```markdown
+# Habit Tracker
+
+Telegram Mini App + Bot for tracking habits with friends.
+
+## Setup
+
+1. Clone repo and install:
+   ```bash
+   npm install
+   ```
+
+2. Copy `.env.example` to `.env` and fill in:
+   - `BOT_TOKEN` — get from @BotFather
+   - `WEBAPP_URL` — for local dev, use [ngrok](https://ngrok.com): `ngrok http 3000`, paste the https URL
+
+3. Start:
+   ```bash
+   node server.js
+   ```
+
+## Group Setup Flow
+
+1. Add your bot to a Telegram group
+2. Send `/setup` in the group
+3. Each member opens the bot in DM and sends `/join <group_id>` (bot posts the exact command)
+4. Members click "Открыть трекер" to open the Mini App
+
+## Local Dev
+
+- The app works at `http://localhost:3000` in browser (uses a dev user when Telegram context unavailable)
+- `ENABLE_CRON=false` by default — cron jobs won't run locally
+- SQLite database is created at `./data/habits.db` automatically
+
+## Deploy (cheap VPS)
+
+1. Get a Hetzner CX11 (~€4/month) or similar
+2. Install Node 18+, clone repo, `npm install`
+3. Set real `WEBAPP_URL` in `.env`
+4. Run with [PM2](https://pm2.keymetrics.io/): `pm2 start server.js`
+5. Set `ENABLE_CRON=true` in `.env`
+6. Configure reverse proxy (nginx) for HTTPS (required by Telegram for WebApps)
+```
+
+- [ ] **Step 2: Run full test suite**
+
+```bash
+npm test
+```
+
+Expected: 8 streak tests passing.
+
+- [ ] **Step 3: Final smoke test**
+
+```bash
+node server.js
+```
+
+Check:
+- `http://localhost:3000` loads the Mini App
+- `POST http://localhost:3000/api/auth` with header `Authorization: tma user=%7B%22id%22%3A1%2C%22first_name%22%3A%22Test%22%7D` returns `{user, groups}`
+
+```bash
+curl -s -X POST http://localhost:3000/api/auth \
+  -H "Authorization: tma user=%7B%22id%22%3A1%2C%22first_name%22%3A%22Test%22%7D" \
+  -H "Content-Type: application/json" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d)))"
+```
+
+Expected: JSON with `user` object and empty `groups` array.
+
+- [ ] **Step 4: Final commit**
+
+```bash
+git add README.md
+git commit -m "docs: add README with setup instructions"
+```

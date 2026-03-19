@@ -33,7 +33,8 @@ router.get('/:groupId/members', (req, res) => {
     return res.status(403).json({ error: 'Not a member' })
   }
 
-  const today = new Date().toLocaleDateString('sv', {
+  // Prefer client-sent date (avoids server timezone mismatches)
+  const today = req.query.date || new Date().toLocaleDateString('sv', {
     timeZone: process.env.CRON_TIMEZONE || 'UTC'
   })
 

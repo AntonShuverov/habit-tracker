@@ -28,12 +28,15 @@ export function setupBot() {
     })
 
     const webAppUrl = process.env.WEBAPP_URL
+    const isPrivate = msg.chat.type === 'private'
     await bot.sendMessage(msg.chat.id,
       `Привет, ${tgUser.first_name}! 👋\n\nОткрой трекер привычек:`,
       {
         reply_markup: {
           inline_keyboard: [[
-            { text: '📅 Открыть трекер', web_app: { url: webAppUrl } }
+            isPrivate
+              ? { text: '📅 Открыть трекер', web_app: { url: webAppUrl } }
+              : { text: '📅 Открыть трекер', url: webAppUrl }
           ]]
         }
       }
@@ -156,7 +159,7 @@ function setupCron() {
           {
             reply_markup: {
               inline_keyboard: [[
-                { text: '📅 Открыть трекер', web_app: { url: process.env.WEBAPP_URL } }
+                { text: '📅 Открыть трекер', url: process.env.WEBAPP_URL }
               ]]
             }
           }

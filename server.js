@@ -9,6 +9,7 @@ import { setupBot } from './bot.js'
 
 const app = express()
 app.use(express.json())
+app.use((req, res, next) => { res.setHeader('ngrok-skip-browser-warning', '1'); next() })
 app.use(express.static('public'))
 
 // Init DB
